@@ -23,8 +23,9 @@ from pathlib import Path
 IS_WINDOWS = platform.system() == "Windows"
 IS_LINUX = platform.system() == "Linux"
 
-# 游戏识别字串集中放这里，FH6 正式发布后如有命名差异，改这里即可
+# 游戏识别字串集中放这里，命名如有变动改这一组即可
 GAME_DISPLAY_NAME = "极限竞速：地平线 6 (Forza Horizon 6)"
+GAME_STEAM_APPID = "2483190"
 GAME_STEAM_NAME_PATTERN = re.compile(r"forza\s*horizon\s*6", re.IGNORECASE)
 GAME_INSTALLDIR_HINTS = ("ForzaHorizon6", "Forza Horizon 6")
 GAME_EXE_PATTERN = re.compile(r"^ForzaHorizon6.*\.exe$", re.IGNORECASE)
@@ -275,29 +276,50 @@ def find_steam_libraries(steam_root: Path) -> list[Path]:
     return libs
 
 
+def _read_acf_install(acf: Path) -> tuple[str, str, str] | None:
+    """返回 (name, installdir, appid) 或 None。"""
+    try:
+        data = parse_vdf(_read_text_loose(acf))
+    except Exception:
+        return None
+    app = data.get("AppState") or data.get("appstate")
+    if not isinstance(app, dict):
+        return None
+    return app.get("name", ""), app.get("installdir", ""), app.get("appid", "")
+
+
 def find_steam_game(steam_root: Path) -> tuple[Path, str] | None:
     """在所有 Steam 库里找 FH6。返回 (install_dir, appid) 或 None。"""
-    for lib in find_steam_libraries(steam_root):
+    libs = find_steam_libraries(steam_root)
+    # 第一遍：按 AppID 直查 appmanifest_<id>.acf
+    for lib in libs:
+        acf = lib / "steamapps" / f"appmanifest_{GAME_STEAM_APPID}.acf"
+        if not acf.exists():
+            continue
+        info_tuple = _read_acf_install(acf)
+        if not info_tuple:
+            continue
+        _, installdir, appid = info_tuple
+        if installdir:
+            install_path = lib / "steamapps" / "common" / installdir
+            if install_path.exists():
+                return install_path, appid or GAME_STEAM_APPID
+    # 第二遍：兜底按名字 / installdir 匹配（应对未来 AppID 变动 / 测试版等情况）
+    for lib in libs:
         steamapps = lib / "steamapps"
         if not steamapps.exists():
             continue
         for acf in steamapps.glob("appmanifest_*.acf"):
-            try:
-                data = parse_vdf(_read_text_loose(acf))
-                app = data.get("AppState") or data.get("appstate")
-                if not isinstance(app, dict):
-                    continue
-                name = app.get("name", "")
-                installdir = app.get("installdir", "")
-                appid = app.get("appid", "")
-                if not (GAME_STEAM_NAME_PATTERN.search(name) or
-                        any(h.lower() == installdir.lower() for h in GAME_INSTALLDIR_HINTS)):
-                    continue
-                install_path = steamapps / "common" / installdir
-                if install_path.exists():
-                    return install_path, appid
-            except Exception:
+            info_tuple = _read_acf_install(acf)
+            if not info_tuple:
                 continue
+            name, installdir, appid = info_tuple
+            if not (GAME_STEAM_NAME_PATTERN.search(name) or
+                    any(h.lower() == installdir.lower() for h in GAME_INSTALLDIR_HINTS)):
+                continue
+            install_path = steamapps / "common" / installdir
+            if install_path.exists():
+                return install_path, appid
     return None
 
 
@@ -474,10 +496,11 @@ def user_pref_path(version: str, steam_appid: str | None = None) -> Path | None:
         base = Path(os.environ.get("LOCALAPPDATA") or Path.home() / "AppData" / "Local")
         return base / USER_PREF_DIR / USER_PREF_FILE
     # Linux: 仅 Steam 版有效（Proton compatdata）
-    if version != "steam" or not steam_appid:
+    if version not in ("steam", "manual"):
         return None
+    appid = steam_appid or GAME_STEAM_APPID
     for root in find_steam_root():
-        pfx = root / "steamapps" / "compatdata" / steam_appid / "pfx"
+        pfx = root / "steamapps" / "compatdata" / appid / "pfx"
         if pfx.exists():
             return (pfx / "drive_c" / "users" / "steamuser" /
                     "AppData" / "Local" / USER_PREF_DIR / USER_PREF_FILE)

@@ -63,10 +63,6 @@ python fh6lang.py --no-pause     # 结束不暂停（CI/脚本用）
 
 `UserPreferredLang` 文件在用户 AppData 下，游戏更新不会动它，所以一般不用重写。
 
-## FH6 还没发布？
-
-是的，游戏未发布前，"6"相关的字串（游戏名、目录名、exe 名）都是按 FH5 的模式预测的，写在 `fh6lang.py` 顶部的常量区。游戏正式发布后如果命名有差异，改那几个常量即可。
-
 ## 工作原理细节
 
 互换 zip 用 `os.rename` 三步原子化（CHS→tmp，JP→CHS，tmp→JP），任何一步失败立即反向回滚。互换前后分别计算 SHA-256 并存进状态文件。
