@@ -7,6 +7,7 @@
 
 仅依赖 Python 标准库。支持 Windows (Steam / Xbox) 和 Linux Steam Deck (Steam)。
 """
+from __future__ import annotations
 
 import argparse
 import ctypes
@@ -15,7 +16,6 @@ import json
 import os
 import platform
 import re
-import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -434,7 +434,7 @@ def is_game_running() -> bool:
                 if GAME_EXE_PATTERN.match(name):
                     return True
         else:
-            # Linux: pgrep -f 匹配完整 cmdline，Proton 下 exe 名保留
+            # Linux: pgrep -af 输出 "<pid> <cmdline>"，Proton 下 exe 名保留
             out = subprocess.run(
                 ["pgrep", "-af", "ForzaHorizon6"],
                 capture_output=True, text=True, timeout=10,
@@ -442,8 +442,13 @@ def is_game_running() -> bool:
             for line in out.stdout.splitlines():
                 if any(ex in line for ex in GAME_EXE_EXCLUDES):
                     continue
-                if GAME_EXE_PATTERN.search(line):
-                    return True
+                # 对 cmdline 里每个 token 取 basename 匹配（GAME_EXE_PATTERN 是锚定到完整 exe 名的）
+                for token in line.split():
+                    name = os.path.basename(token)
+                    if name in GAME_EXE_EXCLUDES:
+                        continue
+                    if GAME_EXE_PATTERN.match(name):
+                        return True
     except (subprocess.TimeoutExpired, FileNotFoundError):
         pass
     return False
