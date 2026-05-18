@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""FH6Lang - 极限竞速：地平线 6 中文 UI + 日语配音切换工具
+"""FH6Lang - 极限竞速：地平线 6 语言切换工具
 
-通过互换 ./media/Stripped/StringTables/CHS.zip 与 JP.zip 这两个语言包文件，
-并在 AppData 下写入 UserPreferredLang=JP，让游戏以中文界面 + 日语配音运行。
+通过互换 ./media/Stripped/StringTables/ 下的语言包文件，
+并在 AppData 下写入 UserPreferredLang，让游戏以选定界面语言 + 日语配音运行。
+
+支持模式：中文 UI + 日语配音、英文 UI + 日语配音。
 
 仅依赖 Python 标准库。支持 Windows (Steam / Xbox) 和 Linux Steam Deck (Steam)。
 """
@@ -37,10 +39,22 @@ GAME_EXE_EXCLUDES = {
 }
 
 STRINGTABLES_REL = Path("media") / "Stripped" / "StringTables"
-LANG_FILES = ("CHS.zip", "JP.zip")
 USER_PREF_DIR = "ForzaHorizon6"
 USER_PREF_FILE = "UserPreferredLang"
-USER_PREF_VALUE = "JP"
+
+SWAP_MODES: dict[str, dict] = {
+    "chs+jp": {
+        "label": "中文 UI + 日语配音",
+        "files": ("CHS.zip", "JP.zip"),
+        "pref": "JP",
+    },
+    "en+jp": {
+        "label": "英文 UI + 日语配音",
+        "files": ("EN.zip", "JP.zip"),
+        "pref": "JP",
+    },
+}
+DEFAULT_MODE = "chs+jp"
 
 APP_NAME = "FH6Lang"
 
@@ -521,7 +535,7 @@ def read_user_pref(path: Path) -> str | None:
         return None
 
 
-def write_user_pref(path: Path, value: str = USER_PREF_VALUE) -> None:
+def write_user_pref(path: Path, value: str = "JP") -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("wb") as f:
         f.write(value.encode("utf-8"))
@@ -535,26 +549,24 @@ class SwapError(Exception):
     pass
 
 
-def swap_zips(stringtables_dir: Path) -> None:
-    chs = stringtables_dir / LANG_FILES[0]
-    jp = stringtables_dir / LANG_FILES[1]
-    tmp = stringtables_dir / (LANG_FILES[0] + ".fh6lang.tmp")
+def swap_zips(stringtables_dir: Path, file_a: str, file_b: str) -> None:
+    a = stringtables_dir / file_a
+    b = stringtables_dir / file_b
+    tmp = stringtables_dir / (file_a + ".fh6lang.tmp")
     if tmp.exists():
         raise SwapError(f"临时文件已存在，可能上次互换未完成: {tmp}")
     # 三步原子化
-    os.rename(chs, tmp)
+    os.rename(a, tmp)
     try:
-        os.rename(jp, chs)
+        os.rename(b, a)
     except Exception:
-        # 回滚步骤 1
-        os.rename(tmp, chs)
+        os.rename(tmp, a)
         raise
     try:
-        os.rename(tmp, jp)
+        os.rename(tmp, b)
     except Exception:
-        # 回滚步骤 2 和 1
-        os.rename(chs, jp)
-        os.rename(tmp, chs)
+        os.rename(a, b)
+        os.rename(tmp, a)
         raise
 
 
@@ -566,7 +578,7 @@ def banner() -> None:
     print()
     print(cyan("=" * 60))
     print(bold(cyan(f"  {APP_NAME} - {GAME_DISPLAY_NAME}")))
-    print(cyan("  中文 UI + 日语配音 切换工具"))
+    print(cyan("  语言切换工具"))
     print(cyan("=" * 60))
     print()
 
@@ -611,6 +623,25 @@ def prompt_version_choice() -> str:
         warn("无效选项，请重新输入。")
 
 
+def prompt_lang_choice() -> str:
+    info(bold("请选择界面语言（语音固定为日语）："))
+    modes = list(SWAP_MODES.items())
+    for i, (key, mode) in enumerate(modes, 1):
+        info(f"  [{i}] {mode['label']}")
+    info("  [Q] 退出")
+    while True:
+        ans = ask("请输入选项").lower()
+        if ans in ("q", "quit", "exit"):
+            sys.exit(0)
+        try:
+            idx = int(ans) - 1
+            if 0 <= idx < len(modes):
+                return modes[idx][0]
+        except ValueError:
+            pass
+        warn("无效选项，请重新输入。")
+
+
 def confirm_install_dir(candidate: Path | None) -> Path | None:
     if candidate is not None:
         info(f"检测到安装目录: {bold(str(candidate))}")
@@ -626,27 +657,28 @@ def confirm_install_dir(candidate: Path | None) -> Path | None:
         fail(f"该路径下没有找到 {STRINGTABLES_REL}/，请重新输入或留空退出。")
 
 
-def validate_install(install_dir: Path) -> Path:
+def validate_install(install_dir: Path, swap_files: tuple[str, str]) -> Path:
     st = install_dir / STRINGTABLES_REL
     if not st.exists():
         raise SwapError(f"找不到目录: {st}")
-    missing = [f for f in LANG_FILES if not (st / f).exists()]
+    missing = [f for f in swap_files if not (st / f).exists()]
     if missing:
         raise SwapError(f"缺少语言包文件: {', '.join(missing)}")
     return st
 
 
 def describe_state(install_key: str, stringtables: Path, pref_path: Path | None,
-                   state: dict) -> tuple[str, dict]:
+                   state: dict, swap_files: tuple[str, str],
+                   pref_value: str) -> tuple[str, dict]:
     """返回 ('original' | 'swapped' | 'unknown', 当前 hash 字典)。"""
     info("计算文件哈希...")
-    current = {f: sha256_of(stringtables / f) for f in LANG_FILES}
+    current = {f: sha256_of(stringtables / f) for f in swap_files}
     entry = state.get(install_key, {})
     orig = entry.get("original") or {}
     swap = entry.get("swapped") or {}
-    if orig and all(orig.get(f) == current[f] for f in LANG_FILES):
+    if orig and all(orig.get(f) == current[f] for f in swap_files):
         status = "original"
-    elif swap and all(swap.get(f) == current[f] for f in LANG_FILES):
+    elif swap and all(swap.get(f) == current[f] for f in swap_files):
         status = "swapped"
     else:
         status = "unknown"
@@ -656,7 +688,7 @@ def describe_state(install_key: str, stringtables: Path, pref_path: Path | None,
     if status == "original":
         ok("语言包：" + green("原始"))
     elif status == "swapped":
-        ok("语言包：" + cyan("已互换（CHS<->JP）"))
+        ok("语言包：" + cyan(f"已互换（{swap_files[0]}<->{swap_files[1]}）"))
     else:
         warn("语言包：" + yellow("未知（可能游戏已更新或被手动改过）"))
 
@@ -664,12 +696,12 @@ def describe_state(install_key: str, stringtables: Path, pref_path: Path | None,
         warn(f"{USER_PREF_FILE}：" + yellow("此平台无法定位（Linux 非 Steam 版？）"))
     else:
         existing = read_user_pref(pref_path)
-        if existing == USER_PREF_VALUE:
-            ok(f"{USER_PREF_FILE}：" + green(f"已设置为 {USER_PREF_VALUE}"))
+        if existing == pref_value:
+            ok(f"{USER_PREF_FILE}：" + green(f"已设置为 {pref_value}"))
         elif existing is None:
             warn(f"{USER_PREF_FILE}：" + yellow("未设置"))
         else:
-            warn(f"{USER_PREF_FILE}：" + yellow(f"当前值为 {existing!r}（非 {USER_PREF_VALUE}）"))
+            warn(f"{USER_PREF_FILE}：" + yellow(f"当前值为 {existing!r}（非 {pref_value}）"))
     return status, current
 
 
@@ -714,6 +746,17 @@ def run(args: argparse.Namespace) -> int:
             return 0  # 已启动新进程，本进程退出
         warn("提权失败或被取消，继续以普通权限运行（Xbox 版可能写不进去）。")
 
+    # 选择语言模式
+    if args.lang:
+        mode_key = args.lang
+    else:
+        mode_key = prompt_lang_choice()
+    mode = SWAP_MODES[mode_key]
+    swap_files = mode["files"]
+    pref_value = mode["pref"]
+    info(f"已选择：{mode['label']}")
+    info("")
+
     if args.path:
         version = "manual"
         install_dir = Path(args.path).expanduser()
@@ -729,12 +772,12 @@ def run(args: argparse.Namespace) -> int:
     info("")
     info("正在校验游戏文件...")
     try:
-        stringtables = validate_install(install_dir)
+        stringtables = validate_install(install_dir, swap_files)
     except SwapError as e:
         fail(str(e))
         return 1
     ok(f"找到 {stringtables}")
-    for f in LANG_FILES:
+    for f in swap_files:
         size = (stringtables / f).stat().st_size
         ok(f"{f} ({size / (1024 * 1024):.1f} MiB)")
 
@@ -747,7 +790,8 @@ def run(args: argparse.Namespace) -> int:
     install_key = str(install_dir.resolve())
     pref_path = user_pref_path(version if version != "manual" else "steam", steam_appid)
 
-    status, current_hashes = describe_state(install_key, stringtables, pref_path, state)
+    status, current_hashes = describe_state(install_key, stringtables, pref_path, state,
+                                            swap_files, pref_value)
 
     info("")
     if status == "swapped":
@@ -757,34 +801,39 @@ def run(args: argparse.Namespace) -> int:
         info("  [Q] 退出")
         choice = ask("请选择", default="Q").lower()
         if choice == "1":
-            return do_revert(install_key, stringtables, pref_path, state)
+            return do_revert(install_key, stringtables, pref_path, state,
+                             swap_files, pref_value)
         if choice == "2":
-            return do_pref_only(pref_path)
+            return do_pref_only(pref_path, pref_value)
         return 0
 
     info(bold("操作选项："))
-    info("  [1] 应用：中文 UI + 日语配音")
+    info(f"  [1] 应用：{mode['label']}")
     info("  [Q] 退出")
     choice = ask("请选择", default="Q").lower()
     if choice == "1":
         return do_apply(install_key, stringtables, current_hashes, pref_path,
-                        state, fresh=(status == "unknown"))
+                        state, fresh=(status == "unknown"),
+                        swap_files=swap_files, pref_value=pref_value,
+                        mode_label=mode["label"])
     return 0
 
 
 def do_apply(install_key: str, stringtables: Path, current_hashes: dict,
-             pref_path: Path | None, state: dict, fresh: bool) -> int:
+             pref_path: Path | None, state: dict, fresh: bool, *,
+             swap_files: tuple[str, str], pref_value: str,
+             mode_label: str) -> int:
     if fresh:
         warn("当前哈希与已知状态都不匹配，按全新原始状态处理（旧记录将被覆盖）。")
     info("执行互换...")
     try:
-        swap_zips(stringtables)
+        swap_zips(stringtables, swap_files[0], swap_files[1])
     except Exception as e:
         fail(f"互换失败：{e}")
         return 1
-    ok("CHS.zip <-> JP.zip 互换完成")
+    ok(f"{swap_files[0]} <-> {swap_files[1]} 互换完成")
 
-    swapped_hashes = {f: sha256_of(stringtables / f) for f in LANG_FILES}
+    swapped_hashes = {f: sha256_of(stringtables / f) for f in swap_files}
     state[install_key] = {"original": current_hashes, "swapped": swapped_hashes}
     try:
         save_state(state)
@@ -796,33 +845,33 @@ def do_apply(install_key: str, stringtables: Path, current_hashes: dict,
         warn(f"跳过 {USER_PREF_FILE}：当前平台无法定位 AppData 路径。")
     else:
         existing = read_user_pref(pref_path)
-        if existing == USER_PREF_VALUE:
-            ok(f"{USER_PREF_FILE} 已存在且为 {USER_PREF_VALUE}，无需重写")
+        if existing == pref_value:
+            ok(f"{USER_PREF_FILE} 已存在且为 {pref_value}，无需重写")
         else:
             try:
-                write_user_pref(pref_path)
+                write_user_pref(pref_path, pref_value)
                 ok(f"已写入 {pref_path}")
             except Exception as e:
                 fail(f"写 {USER_PREF_FILE} 失败：{e}")
 
     info("")
-    info(green(bold("完成！启动游戏后即可享受中文 UI + 日语配音。")))
+    info(green(bold(f"完成！启动游戏后即可享受{mode_label}。")))
     info(yellow("提示：游戏更新可能会还原 zip 互换，那时再跑一次本工具即可。"))
     return 0
 
 
 def do_revert(install_key: str, stringtables: Path, pref_path: Path | None,
-              state: dict) -> int:
+              state: dict, swap_files: tuple[str, str], pref_value: str) -> int:
     info("执行还原...")
     try:
-        swap_zips(stringtables)
+        swap_zips(stringtables, swap_files[0], swap_files[1])
     except Exception as e:
         fail(f"还原失败：{e}")
         return 1
-    ok("CHS.zip <-> JP.zip 已交换回原状态")
+    ok(f"{swap_files[0]} <-> {swap_files[1]} 已交换回原状态")
 
     # 还原后，新的 hash 应该匹配 original
-    new_hashes = {f: sha256_of(stringtables / f) for f in LANG_FILES}
+    new_hashes = {f: sha256_of(stringtables / f) for f in swap_files}
     entry = state.get(install_key, {})
     entry["original"] = new_hashes
     entry.pop("swapped", None)
@@ -833,7 +882,7 @@ def do_revert(install_key: str, stringtables: Path, pref_path: Path | None,
         warn(f"写状态文件失败：{e}")
 
     if pref_path is not None and pref_path.exists():
-        if read_user_pref(pref_path) == USER_PREF_VALUE:
+        if read_user_pref(pref_path) == pref_value:
             try:
                 pref_path.unlink()
                 ok(f"已删除 {pref_path}")
@@ -846,12 +895,12 @@ def do_revert(install_key: str, stringtables: Path, pref_path: Path | None,
     return 0
 
 
-def do_pref_only(pref_path: Path | None) -> int:
+def do_pref_only(pref_path: Path | None, pref_value: str) -> int:
     if pref_path is None:
         fail("当前平台无法定位 AppData 路径。")
         return 1
     try:
-        write_user_pref(pref_path)
+        write_user_pref(pref_path, pref_value)
         ok(f"已写入 {pref_path}")
         return 0
     except Exception as e:
@@ -862,6 +911,8 @@ def do_pref_only(pref_path: Path | None) -> int:
 def parse_args(argv: list[str]) -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     p.add_argument("--path", help="直接指定游戏安装目录（跳过自动检测）")
+    p.add_argument("--lang", choices=list(SWAP_MODES.keys()),
+                   help="语言模式：chs+jp（中文UI+日语配音）、en+jp（英文UI+日语配音）")
     p.add_argument("--no-uac", action="store_true", help="不在 Windows 上自动请求管理员")
     p.add_argument("--no-pause", action="store_true", help="结束时不暂停（CI / 脚本调用）")
     return p.parse_args(argv)
