@@ -1,0 +1,33 @@
+name: PR Build
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - "fh6lang.py"
+      - ".github/workflows/pr-build.yml"
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install PyInstaller
+        run: pip install pyinstaller
+
+      - name: Build
+        run: pyinstaller --onefile --uac-admin --console --name FH6Lang fh6lang.py
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: FH6Lang-pr-${{ github.event.pull_request.number }}
+          path: dist/FH6Lang.exe
+          retention-days: 14
