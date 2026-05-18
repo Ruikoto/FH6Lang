@@ -1,3 +1,7 @@
+<p align="right">
+  <a href="README_en.md">English</a>
+</p>
+
 # FH6Lang
 
 把《极限竞速：地平线 6》（Forza Horizon 6）调成 **中文 UI + 日语配音** 的小工具。
