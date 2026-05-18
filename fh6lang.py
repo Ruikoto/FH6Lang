@@ -17,6 +17,7 @@ import json
 import os
 import platform
 import re
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -38,6 +39,7 @@ GAME_EXE_EXCLUDES = {
 }
 
 STRINGTABLES_REL = Path("media") / "Stripped" / "StringTables"
+BACKUP_DIR_NAME = ".fh6lang_backup"
 USER_PREF_DIR = "ForzaHorizon6"
 USER_PREF_FILE = "UserPreferredLang"
 
@@ -140,6 +142,18 @@ STRINGS: dict[str, dict[str, str]] = {
         "help_lang": "语言模式：chs+jp（中文UI+日语音频）、en+jp（英文UI+日语音频）",
         "help_no_uac": "不在 Windows 上自动请求管理员",
         "help_no_pause": "结束时不暂停（CI / 脚本调用）",
+        "saved_mode_found": "上次使用的语言模式：{label}",
+        "use_saved_mode": "是否使用上次的模式？",
+        "backup_creating": "正在备份原始语言包...",
+        "backup_done": "已备份到 {path}",
+        "backup_fail": "备份失败：{err}",
+        "backup_exists": "备份已存在，跳过",
+        "restore_from_backup": "从备份还原...",
+        "restore_done": "已从备份还原语言包",
+        "restore_fail": "从备份还原失败：{err}",
+        "restore_no_backup": "备份目录不存在，使用互换方式还原",
+        "backup_cleaned": "已清理备份文件",
+        "backup_clean_fail": "清理备份失败：{err}",
     },
     "en": {
         "banner_subtitle": "Language Switcher",
@@ -213,6 +227,18 @@ STRINGS: dict[str, dict[str, str]] = {
         "help_lang": "Language mode: chs+jp (Chinese UI + JP voice), en+jp (English UI + JP voice)",
         "help_no_uac": "Don't request admin on Windows",
         "help_no_pause": "Don't pause on exit (for CI / scripts)",
+        "saved_mode_found": "Last used language mode: {label}",
+        "use_saved_mode": "Use the saved mode?",
+        "backup_creating": "Backing up original language packs...",
+        "backup_done": "Backed up to {path}",
+        "backup_fail": "Backup failed: {err}",
+        "backup_exists": "Backup already exists, skipping",
+        "restore_from_backup": "Restoring from backup...",
+        "restore_done": "Language packs restored from backup",
+        "restore_fail": "Restore from backup failed: {err}",
+        "restore_no_backup": "Backup directory not found, using swap to revert",
+        "backup_cleaned": "Backup files cleaned",
+        "backup_clean_fail": "Failed to clean backup: {err}",
     },
 }
 
@@ -733,6 +759,49 @@ def swap_zips(stringtables_dir: Path, file_a: str, file_b: str) -> None:
 
 
 # ---------------------------------------------------------------------------
+# 备份 / 还原
+# ---------------------------------------------------------------------------
+
+def backup_dir(stringtables_dir: Path) -> Path:
+    return stringtables_dir / BACKUP_DIR_NAME
+
+
+def has_backup(stringtables_dir: Path, files: tuple[str, ...]) -> bool:
+    bd = backup_dir(stringtables_dir)
+    return bd.exists() and all((bd / f).exists() for f in files)
+
+
+def backup_zips(stringtables_dir: Path, files: tuple[str, ...]) -> Path:
+    """备份语言包文件到 .fh6lang_backup/ 目录。"""
+    bd = backup_dir(stringtables_dir)
+    bd.mkdir(exist_ok=True)
+    for f in files:
+        src = stringtables_dir / f
+        dst = bd / f
+        if not dst.exists():
+            shutil.copy2(src, dst)
+    return bd
+
+
+def restore_zips(stringtables_dir: Path, files: tuple[str, ...]) -> None:
+    """从 .fh6lang_backup/ 目录还原语言包文件。"""
+    bd = backup_dir(stringtables_dir)
+    if not has_backup(stringtables_dir, files):
+        raise SwapError("Backup directory missing or incomplete")
+    for f in files:
+        src = bd / f
+        dst = stringtables_dir / f
+        shutil.copy2(src, dst)
+
+
+def clean_backup(stringtables_dir: Path) -> None:
+    """清理备份目录。"""
+    bd = backup_dir(stringtables_dir)
+    if bd.exists():
+        shutil.rmtree(bd)
+
+
+# ---------------------------------------------------------------------------
 # 主流程
 # ---------------------------------------------------------------------------
 
@@ -766,9 +835,19 @@ def ask_yes_no(prompt: str, default: bool = True) -> bool:
             return False
 
 
-def prompt_lang_choice() -> str:
+def prompt_lang_choice(saved_mode: str | None = None) -> str:
     """双语语言选择菜单。返回 SWAP_MODES key，并设置全局 LANG。"""
     global LANG
+
+    # 如果有保存的模式，先询问是否使用
+    if saved_mode and saved_mode in SWAP_MODES:
+        mode = SWAP_MODES[saved_mode]
+        label = f"{mode['label_zh']} / {mode['label_en']}"
+        info(t2("saved_mode_found", label=label))
+        if ask_yes_no(t2("use_saved_mode"), default=True):
+            LANG = "zh" if saved_mode == "chs+jp" else "en"
+            return saved_mode
+
     info(bold(t2("choose_lang")))
     modes = list(SWAP_MODES.items())
     for i, (key, mode) in enumerate(modes, 1):
@@ -916,20 +995,29 @@ def run(args: argparse.Namespace) -> int:
             return 0
         warn(t2("uac_failed"))
 
+    state = load_state()
+
     # 选择语言模式
     if args.lang:
         mode_key = args.lang
-        # 命令行模式：chs+jp → 中文界面，en+jp → 英文界面
         global LANG
         LANG = "zh" if mode_key == "chs+jp" else "en"
     else:
-        mode_key = prompt_lang_choice()
+        saved_mode = state.get("mode")
+        mode_key = prompt_lang_choice(saved_mode)
     mode = SWAP_MODES[mode_key]
     swap_files = mode["files"]
     pref_value = mode["pref"]
     label = mode["label_zh"] if LANG == "zh" else mode["label_en"]
     info(t("selected", label=label))
     info("")
+
+    # 保存选择的语言模式
+    state["mode"] = mode_key
+    try:
+        save_state(state)
+    except Exception:
+        pass
 
     if args.path:
         version = "manual"
@@ -960,7 +1048,6 @@ def run(args: argparse.Namespace) -> int:
         return 1
     ok(t("game_not_running"))
 
-    state = load_state()
     install_key = str(install_dir.resolve())
     pref_path = user_pref_path(version if version != "manual" else "steam", steam_appid)
 
@@ -999,6 +1086,18 @@ def do_apply(install_key: str, stringtables: Path, current_hashes: dict,
              mode_label: str) -> int:
     if fresh:
         warn(t("hash_mismatch_fresh"))
+
+    # 备份原始语言包
+    if has_backup(stringtables, swap_files):
+        ok(t("backup_exists"))
+    else:
+        info(t("backup_creating"))
+        try:
+            bd = backup_zips(stringtables, swap_files)
+            ok(t("backup_done", path=bd))
+        except Exception as e:
+            warn(t("backup_fail", err=e))
+
     info(t("exec_swap"))
     try:
         swap_zips(stringtables, swap_files[0], swap_files[1])
@@ -1037,12 +1136,29 @@ def do_apply(install_key: str, stringtables: Path, current_hashes: dict,
 def do_revert(install_key: str, stringtables: Path, pref_path: Path | None,
               state: dict, swap_files: tuple[str, str], pref_value: str) -> int:
     info(t("exec_revert"))
-    try:
-        swap_zips(stringtables, swap_files[0], swap_files[1])
-    except Exception as e:
-        fail(t("revert_fail", err=e))
-        return 1
-    ok(t("revert_done", a=swap_files[0], b=swap_files[1]))
+
+    # 优先从备份还原，没有备份则用互换方式
+    if has_backup(stringtables, swap_files):
+        info(t("restore_from_backup"))
+        try:
+            restore_zips(stringtables, swap_files)
+            ok(t("restore_done"))
+            try:
+                clean_backup(stringtables)
+                ok(t("backup_cleaned"))
+            except Exception as e:
+                warn(t("backup_clean_fail", err=e))
+        except Exception as e:
+            fail(t("restore_fail", err=e))
+            return 1
+    else:
+        warn(t("restore_no_backup"))
+        try:
+            swap_zips(stringtables, swap_files[0], swap_files[1])
+        except Exception as e:
+            fail(t("revert_fail", err=e))
+            return 1
+        ok(t("revert_done", a=swap_files[0], b=swap_files[1]))
 
     new_hashes = {f: sha256_of(stringtables / f) for f in swap_files}
     entry = state.get(install_key, {})
