@@ -1,106 +1,76 @@
+<p align="right">
+  <a href="README_en.md">English</a>
+</p>
+
 # FH6Lang
 
-**Forza Horizon 6 — Chinese UI + Japanese Voice Switcher**
+把《极限竞速：地平线 6》（Forza Horizon 6）调成 **中文 UI + 日语配音** 的小工具。
 
-**极限竞速：地平线 6 — 中文界面 + 日语配音切换工具**
+## 这是什么
 
----
+游戏本身把"显示语言"和"配音语言"绑在了一起。`./media/Stripped/StringTables/` 下每个语言一个 zip，把 `CHS.zip` 和 `JP.zip` 这两个文件互换，再在 `AppData\Local\ForzaHorizon6\UserPreferredLang` 里写一个 `JP`，游戏就会以中文界面加载日语音频包。
 
-## What It Does / 功能简介
+这个工具做的就是这两件事，再加自动找游戏目录和状态记忆。
 
-The game bundles display language and voice language together. Under `./media/Stripped/StringTables/`, each language has its own zip file. This tool swaps `CHS.zip` and `JP.zip`, then writes `UserPreferredLang=JP` to AppData — giving you Chinese UI with Japanese audio.
+## 支持的平台和版本
 
-游戏把"显示语言"和"配音语言"绑在了一起。`./media/Stripped/StringTables/` 下每个语言一个 zip。本工具将 `CHS.zip` 和 `JP.zip` 互换，并在 AppData 中写入 `UserPreferredLang=JP`，即可实现中文界面 + 日语配音。
+- **Windows + Steam 版**
+- **Windows + Xbox / Microsoft Store / Game Pass 版**
+- **Steam Deck / Linux + Steam 版**（含 Proton）
 
-## Supported Platforms / 支持平台
-
-| Platform / 平台 | Edition / 版本 |
-|---|---|
-| Windows | Steam |
-| Windows | Xbox / Microsoft Store / Game Pass |
-| Steam Deck / Linux | Steam (Proton) |
-
-## Download / 下载
-
-Grab the latest `FH6Lang.exe` from [Releases](../../releases).
-
-从 [Releases](../../releases) 页面下载最新的 `FH6Lang.exe`。
-
-## Usage / 使用方法
+## 使用方法
 
 ### Windows
 
-Double-click `FH6Lang.exe`. It will auto-request UAC elevation if needed (useful for Xbox edition).
+到 [Releases](../../releases) 下载 `FH6Lang.exe`，双击运行。会自动弹 UAC 提权（Xbox 版可能用得上）。
 
-双击运行 `FH6Lang.exe`，会自动弹出 UAC 提权（Xbox 版可能需要）。
+或者本地装了 Python 3 的话：
 
-Or with Python installed / 或者本地有 Python 3：
-
-```bash
+```
 python fh6lang.py
 ```
 
 ### Steam Deck / Linux
 
-```bash
+```
 chmod +x run.sh
 ./run.sh
 ```
 
-SteamOS ships with Python 3 — no extra dependencies needed.
+SteamOS 默认有 Python 3，不需要装额外东西。
 
-SteamOS 自带 Python 3，无需额外安装。
+## 工作流程
 
-## Workflow / 工作流程
+1. 启动后选游戏版本（Steam / Xbox / 手动指定路径）
+2. 自动找安装目录，找到后让你确认
+3. 显示当前状态：原始 / 已互换 / 未知
+4. 选"应用"或"还原"
 
-1. Select game edition (Steam / Xbox / Manual path)
-   选择游戏版本（Steam / Xbox / 手动指定路径）
-
-2. Auto-detect install directory, ask for confirmation
-   自动检测安装目录，确认后继续
-
-3. Show current state: Original / Swapped / Unknown
-   显示当前状态：原始 / 已互换 / 未知
-
-4. Choose "Apply" or "Revert"
-   选择"应用"或"还原"
-
-## CLI Arguments / 命令行参数
+## 命令行参数
 
 ```
 python fh6lang.py --path "D:\SteamLibrary\steamapps\common\ForzaHorizon6"
-python fh6lang.py --no-uac       # Skip UAC prompt on Windows / Windows 不请求管理员
-python fh6lang.py --no-pause     # Don't pause on exit (for CI / scripts) / 结束不暂停
+python fh6lang.py --no-uac       # Windows 不要求管理员
+python fh6lang.py --no-pause     # 结束不暂停（CI/脚本用）
 ```
 
-## State File / 状态文件
+## 状态文件位置
 
-| OS | Path |
-|---|---|
-| Windows | `%LOCALAPPDATA%\FH6Lang\state.json` |
-| Linux | `~/.config/fh6lang/state.json` |
+- Windows: `%LOCALAPPDATA%\FH6Lang\state.json`
+- Linux: `~/.config/fh6lang/state.json`
 
-Stores SHA-256 hashes of both zip files before and after swapping, used to detect current state.
+里面存的是互换前/后两个 zip 的 SHA-256，用来判断当前到底是原始还是已互换。
 
-存储互换前后两个 zip 的 SHA-256，用于判断当前是原始还是已互换。
+## 游戏更新后怎么办
 
-## After a Game Update / 游戏更新后
+游戏更新会重新分发原版 `CHS.zip` 和 `JP.zip`，你之前的互换被还原了。再跑一次本工具，它会发现哈希不对，按全新原始状态记录，重新互换即可。
 
-A game update will restore the original `CHS.zip` and `JP.zip`, reverting your swap. Just run this tool again — it will detect the hash mismatch, record the new baseline, and re-swap.
+`UserPreferredLang` 文件在用户 AppData 下，游戏更新不会动它，所以一般不用重写。
 
-游戏更新会还原原版 `CHS.zip` 和 `JP.zip`。再跑一次本工具即可，它会检测到哈希变化，记录新基准并重新互换。
+## 工作原理细节
 
-The `UserPreferredLang` file lives under user AppData and is not touched by game updates, so it usually doesn't need rewriting.
+互换 zip 用 `os.rename` 三步原子化（CHS→tmp，JP→CHS，tmp→JP），任何一步失败立即反向回滚。互换前后分别计算 SHA-256 并存进状态文件。
 
-`UserPreferredLang` 位于用户 AppData 下，游戏更新不会动它，一般无需重写。
+进程检测在 Windows 用 `tasklist`，在 Linux 用 `pgrep -af`（Proton 下 exe 名保留，所以这招能用）。排除 Launcher、EasyAntiCheat、gamelaunchhelper 这些辅助进程。
 
-## How It Works / 工作原理
-
-- **Zip swap** uses `os.rename` in 3 atomic steps (CHS -> tmp, JP -> CHS, tmp -> JP). Any failure triggers an immediate reverse rollback.
-  **zip 互换**通过 `os.rename` 三步原子化执行（CHS -> tmp, JP -> CHS, tmp -> JP），任一步失败立即反向回滚。
-
-- **Process detection** uses `tasklist` on Windows and `pgrep -af` on Linux (Proton preserves the exe name). Excludes launcher/helper processes.
-  **进程检测**在 Windows 用 `tasklist`，Linux 用 `pgrep -af`（Proton 下 exe 名保留）。排除 Launcher 等辅助进程。
-
-- **No third-party dependencies** — Python standard library only.
-  **无第三方依赖**，仅使用 Python 标准库。
+不依赖任何第三方 Python 包，只用标准库。
